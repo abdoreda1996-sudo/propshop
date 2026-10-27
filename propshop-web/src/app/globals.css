@@ -1,0 +1,664 @@
+@import "tailwindcss";
+
+/*
+ * PropShop design tokens — nawy structure, dubizzle actions.
+ *
+ * NOTE ON THE BRIEF: Section 11 originally specified "navy + one accent (emerald)…
+ * should feel like a bank app, not a classifieds site". The owner overrode that on
+ * 2026-09-16 in favour of dubizzle.com.eg, then on 2026-09-16 asked for a mix of
+ * nawy.com and dubizzle and chose "navy structure + red actions". So:
+ *
+ *   NAVY  (#1E4164, sampled from nawy.com) carries STRUCTURE — the header, section
+ *         titles, form labels, the footer. It is never a call to action.
+ *   RED   (#E00000, sampled from dubizzle.com.eg) carries ACTION and the commission
+ *         promise — primary buttons, emphasis badges, the no-commission band.
+ *
+ * The split is the whole point: if red starts appearing on headings, or navy on
+ * buttons, the page stops telling the buyer where to click. Density on the results row
+ * stays dubizzle's; whitespace, radii and the image tiles are nawy's.
+ *
+ * What we deliberately did NOT copy from either: ad slots, promoted listings and urgency
+ * copy. Nothing on this marketplace can buy a better position in a result list.
+ */
+
+@theme {
+  /*
+   * PALETTE (owner, 2026-10-11): "Forest & Flame", inverted, minimal.
+   *
+   *   FOREST (#0F3D2E) — action. Buttons (outlined), links, the things you press.
+   *   RUST   (#C24418) — identity. The logo, selected tabs, sliders, "Verified".
+   *   INK    — everything else: near-black type on white and soft grey, Apple-style.
+   *
+   * The token NAMES are kept so 200+ call sites keep working: `brand-*` still means
+   * "action" (now forest) and `navy-*` still means "structure" (now ink and soft greys).
+   * Rust is the new `accent-*`. Errors get their own `danger-*` red, since red is no
+   * longer an action colour.
+   */
+
+  /* Action — forest. */
+  --color-brand-50: #eef4f1;
+  --color-brand-100: #d6e5de;
+  --color-brand-200: #a9c8ba;
+  --color-brand-400: #3d6b5b;
+  --color-brand-500: #0f3d2e;
+  --color-brand-600: #0b2f23;
+  --color-brand-700: #08241b;
+
+  /* Structure — ink and soft greys (was navy). */
+  --color-navy-900: #1d1d1f;
+  --color-navy-700: #1d1d1f;
+  --color-navy-500: #424245;
+  --color-navy-300: #86868b;
+  --color-navy-100: #e8e8ed;
+  --color-navy-50: #f5f5f7;
+
+  /* Identity — rust. Logo, selected states, sliders, "Verified". */
+  --color-accent-50: #fbefe9;
+  --color-accent-100: #f6d9cc;
+  --color-accent-500: #c24418;
+  --color-accent-600: #a83a14;
+  --color-accent-700: #8c3010;
+
+  /* Errors — their own red. */
+  --color-danger-50: #fdf0ef;
+  --color-danger-100: #fadcd9;
+  --color-danger-600: #b42318;
+  --color-danger-700: #912018;
+
+  /* Neutral text/surface scale */
+  --color-ink-900: #1d1d1f;
+  --color-ink-700: #424245;
+  --color-ink-500: #6e6e73;
+  --color-ink-400: #86868b;
+  --color-ink-200: #e5e5ea;
+  --color-ink-100: #f0f0f2;
+  --color-ink-50: #f5f5f7;
+
+  /* Status tints */
+  --color-ok-50: #e8f7e8;
+  --color-ok-700: #1a7f37;
+  --color-info-50: #e7f1fd;
+  --color-info-600: #0f5dc4;
+
+  /* Bricolage Grotesque (Latin + figures) then IBM Plex Sans Arabic, both self-hosted by
+     next/font (see src/app/layout.tsx). Latin first so digits in Arabic copy come from
+     Bricolage. */
+  --font-sans: var(--font-latin), var(--font-arabic), "IBM Plex Sans Arabic", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+
+  /* One small radius everywhere (2026-10-26). Big soft corners on every box were the
+     main thing making the site look templated. */
+  --radius-card: 8px;
+}
+
+/*
+ * Everything below lives in an explicit cascade layer.
+ *
+ * Tailwind v4 orders layers `theme, base, components, utilities`, so utilities beat
+ * anything in `components` no matter the source order. Unlayered, `.btn { display:
+ * inline-flex }` sat after the utilities in the stylesheet and silently overrode
+ * `hidden` at equal specificity — the mobile header kept rendering desktop-only
+ * buttons and pushed the page 71px wide.
+ */
+
+@layer base {
+  /*
+    Grid children may shrink below their content (mobile pass, 2026-10-20). A grid with no
+    explicit columns gets an `auto` track, and one long `truncate` title then widens the
+    track past a phone screen instead of truncating — it made /dashboard/trades and the
+    admin listing page scroll sideways.
+  */
+  .grid > * {
+    min-width: 0;
+  }
+
+  /* The listing page's fixed phone action bar must not cover the footer. */
+  @media (width < 64rem) {
+    body:has(#mobile-action-bar) {
+      padding-bottom: 76px;
+    }
+  }
+
+  :root {
+    --bg: #ffffff;
+    --bg-muted: #f5f5f7; /* Apple's soft grey */
+    --border: #e5e5ea;
+    --text: #1d1d1f;
+    --text-muted: #6e6e73;
+    /* Headings: ink, not colour. Colour is kept for the logo and the things you press. */
+    --heading: #1d1d1f;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-feature-settings: "kern", "liga";
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  /* RTL is the default direction; the English toggle flips it. Logical properties
+     throughout mean no mirrored stylesheet is needed. */
+  [dir="rtl"] {
+    letter-spacing: 0;
+  }
+
+  .container-page {
+    width: 100%;
+    max-width: 1280px;
+    margin-inline: auto;
+    padding-inline: 16px;
+  }
+
+  @media (max-width: 640px) {
+    .container-page {
+      padding-inline: 12px;
+    }
+  }
+}
+
+@layer components {
+  /* --- Surfaces ------------------------------------------------------------ */
+
+  .card {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+  }
+
+  /* The listing row — the densest, most-scanned surface on the site.
+     dubizzle's information density, nawy's softer shell: a faint resting shadow rather
+     than a hard grey border, lifting on hover. */
+  .row-card {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    box-shadow: none;
+    transition: border-color 0.14s ease, box-shadow 0.14s ease, transform 0.14s ease;
+  }
+  .row-card:hover {
+    border-color: var(--color-ink-400);
+  }
+
+  /* The floating panel nawy sits over its hero photo. */
+  .panel-float {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+  }
+
+  /* --- Buttons ------------------------------------------------------------- */
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 14px;
+    line-height: 1.25;
+    padding: 9px 16px;
+    border: 1.5px solid transparent;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  /* Primary action: an outline in forest, label in the same forest (owner, 2026-10-11).
+     Hover fills it faintly rather than solidly, so the page stays quiet. */
+  .btn-primary {
+    background: transparent;
+    color: var(--color-brand-500);
+    border-color: var(--color-brand-500);
+  }
+  .btn-primary:hover {
+    background: var(--color-brand-50);
+  }
+
+  /* Kept as an alias so existing call sites stay valid. */
+  .btn-accent {
+    background: transparent;
+    color: var(--color-brand-500);
+    border-color: var(--color-brand-500);
+  }
+  .btn-accent:hover {
+    background: var(--color-brand-50);
+  }
+
+  .btn-dark {
+    background: var(--color-ink-900);
+    color: #fff;
+  }
+  .btn-dark:hover {
+    background: #000;
+  }
+
+  /* Secondary action. nawy outlines in its navy rather than neutral grey, which keeps
+     the red primary unmistakably the one to press. */
+  /* Secondary: a quiet grey outline in ink. */
+  .btn-ghost {
+    background: #fff;
+    color: var(--color-ink-900);
+    border-color: var(--color-ink-200);
+  }
+  .btn-ghost:hover {
+    background: var(--color-ink-50);
+    border-color: var(--color-navy-300);
+  }
+
+  .btn-navy {
+    background: transparent;
+    color: var(--color-brand-500);
+    border-color: var(--color-brand-500);
+  }
+  .btn-navy:hover {
+    background: var(--color-brand-50);
+  }
+
+  /* Touch screens: every button at least 44px tall, so it can be hit with a thumb. */
+  @media (pointer: coarse) {
+    .btn {
+      min-height: 44px;
+    }
+  }
+
+  /* One visible focus ring for keyboard users, in the action colour. */
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-brand-500);
+    outline-offset: 2px;
+  }
+
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* --- Form controls ------------------------------------------------------- */
+
+  .input,
+  .select,
+  .textarea {
+    width: 100%;
+    border: 1px solid #d2d2d7;
+    border-radius: 6px;
+    padding: 9px 11px;
+    font-size: 14px;
+    font-family: inherit;
+    background: #fff;
+    color: var(--text);
+  }
+  /* Focus is structure, not action: navy. A red ring on every field would compete with
+     the one red button the form is trying to lead you to. */
+  .input:focus,
+  .select:focus,
+  .textarea:focus {
+    outline: 2px solid var(--color-brand-100);
+    outline-offset: -1px;
+    border-color: var(--color-brand-500);
+  }
+
+  .label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-ink-900);
+    margin-bottom: 6px;
+  }
+
+  /* --- Chips and badges ---------------------------------------------------- */
+
+  /* Grey attribute chip: "Completion Status Ready", "Ownership Resale". */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--color-ink-100);
+    color: var(--color-ink-700);
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 5px 9px;
+    line-height: 1.4;
+  }
+  .chip strong {
+    color: var(--color-ink-900);
+    font-weight: 700;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 4px 8px;
+    line-height: 1.5;
+  }
+
+  .badge-verified {
+    background: var(--color-accent-50);
+    color: var(--color-accent-600);
+  }
+
+  .badge-owner {
+    background: var(--color-ink-100);
+    color: var(--color-ink-700);
+  }
+
+  .badge-below {
+    background: var(--color-ok-50);
+    color: var(--color-ok-700);
+  }
+
+  .badge-above {
+    background: var(--color-danger-50);
+    color: var(--color-danger-700);
+  }
+
+  .badge-neutral {
+    background: var(--color-ink-100);
+    color: var(--color-ink-700);
+  }
+
+  /* Red emphasis badge. Used for the hero eyebrow and the chosen cover photo.
+     Formerly .badge-featured, for paid placement — that product no longer exists. */
+  .badge-accent {
+    background: transparent;
+    color: var(--color-accent-600);
+    box-shadow: inset 0 0 0 1px var(--color-accent-500);
+  }
+
+  /* --- Layout helpers ------------------------------------------------------ */
+
+  .muted {
+    color: var(--text-muted);
+  }
+
+  .hairline {
+    border-top: 1px solid var(--border);
+  }
+
+  /* nawy breathes between sections far more than dubizzle does. */
+  .section {
+    padding-block: 56px;
+  }
+
+  @media (max-width: 640px) {
+    .section {
+      padding-block: 32px;
+    }
+  }
+
+  /* --- nawy section header ------------------------------------------------- */
+
+  /*
+    "Top Compounds / 8 Results Available ................. Show All ›"
+    A navy title, a small grey count under it, and the link pushed to the far end.
+  */
+  .section-title {
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+    color: var(--heading);
+  }
+
+  @media (max-width: 640px) {
+    .section-title {
+      font-size: 19px;
+    }
+  }
+
+  /* The one big headline a page gets. Tight leading, start-aligned, a real reading
+     measure underneath it. */
+  .display {
+    font-size: clamp(28px, 4.4vw, 46px);
+    font-weight: 700;
+    line-height: 1.08;
+    letter-spacing: -0.025em;
+    color: var(--heading);
+    text-wrap: balance;
+  }
+  [dir="rtl"] .display {
+    letter-spacing: 0;
+    line-height: 1.25;
+  }
+
+  .lede {
+    max-width: 58ch;
+    font-size: 16px;
+    line-height: 1.65;
+    color: var(--color-ink-700);
+  }
+
+  /* An editorial section break: a hairline in ink above the heading instead of a card
+     around the section. */
+  .ruled {
+    border-top: 1px solid var(--color-ink-900);
+    padding-top: 14px;
+  }
+
+  /* A plain definition list as a table: label start, value end, hairlines between. */
+  .facts > * {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding-block: 9px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .section-count {
+    margin-top: 2px;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
+  /* --- nawy image tile ----------------------------------------------------- */
+
+  /*
+    A photo tile with the label burned into the bottom on a dark gradient — how nawy
+    browses compounds and areas. The gradient is a pseudo-element so the label stays
+    legible over any photo without a second wrapper element.
+  */
+  .tile {
+    position: relative;
+    display: block;
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--color-navy-100);
+  }
+  .tile img {
+    transition: transform 0.4s ease;
+  }
+  .tile:hover img {
+    transform: scale(1.03);
+  }
+  .tile::after {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    bottom: 0;
+    height: 62%;
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.72) 0%, rgba(0, 0, 0, 0) 100%);
+    pointer-events: none;
+  }
+  .tile-label {
+    position: absolute;
+    inset-inline: 0;
+    bottom: 0;
+    z-index: 1;
+    padding: 12px 14px;
+    color: #fff;
+  }
+
+  /* --- nawy area chip ------------------------------------------------------ */
+
+  /* A circular photo above a name and two stat lines, in a bordered white card. */
+  .area-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 18px 12px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    text-align: center;
+    transition: border-color 0.14s ease;
+  }
+  .area-card:hover {
+    border-color: var(--color-ink-400);
+  }
+  /* Area names vary from one word to four. Reserving two lines keeps the stat rows
+     beneath them on a common baseline across the row. */
+  .area-name {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    min-height: 2.5em;
+  }
+
+  .area-thumb {
+    width: 74px;
+    height: 74px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: var(--color-navy-100);
+    flex-shrink: 0;
+  }
+
+  /* A horizontal rail, as nawy uses for compounds and launches. Scrolls on touch,
+     snaps so a tile never sits half-cut at rest. */
+  .rail {
+    display: flex;
+    gap: 14px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+    padding-bottom: 4px;
+  }
+  .rail::-webkit-scrollbar {
+    display: none;
+  }
+  .rail > * {
+    scroll-snap-align: start;
+    flex: 0 0 auto;
+  }
+
+  /* Photo frames keep a stable shape while images load. */
+  .media-frame {
+    background: var(--color-ink-100);
+    overflow: hidden;
+    position: relative;
+  }
+
+  /*
+    Fades a trailing-edge cover photo into the white page, so the headline beside it sits
+    on flat white rather than on an image.
+
+    Tailwind's `bg-gradient-to-r` is a physical direction, and the hero mirrors: the panel
+    is on the right in English and on the left in Arabic, so the fade has to reverse with
+    it. Expressing that here — one rule, one RTL override — is clearer than stacking
+    `rtl:` variants on the element and hoping the later utility wins the cascade.
+  */
+  .cover-fade {
+    background-image: linear-gradient(
+      to right,
+      #fff 0%,
+      rgba(255, 255, 255, 0.82) 38%,
+      rgba(255, 255, 255, 0) 100%
+    );
+  }
+  [dir="rtl"] .cover-fade {
+    background-image: linear-gradient(
+      to left,
+      #fff 0%,
+      rgba(255, 255, 255, 0.82) 38%,
+      rgba(255, 255, 255, 0) 100%
+    );
+  }
+
+  /* Numbers read better latin-cased even in Arabic copy. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+
+  /* Link-blue, as used for the location quick-links. */
+  .link {
+    color: var(--color-info-600);
+  }
+  .link:hover {
+    text-decoration: underline;
+  }
+}
+
+/* --- Map view -------------------------------------------------------------
+ *
+ * Leaflet's own stylesheet is imported by the map component. These are the two pieces it
+ * cannot provide: the price pin, which replaces the default teardrop, and the popup's
+ * inner layout.
+ */
+.map-pin {
+  display: inline-block;
+  transform: translate(-50%, -50%);
+  white-space: nowrap;
+  background: #fff;
+  color: var(--color-navy-900);
+  border: 1px solid var(--color-navy-100);
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  padding: 3px 7px;
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease, transform 0.12s ease;
+}
+.map-pin:hover {
+  background: var(--color-brand-500);
+  border-color: var(--color-brand-600);
+  color: #fff;
+  /* Lifted above its neighbours: pins in one compound sit almost on top of each other. */
+  z-index: 500;
+}
+
+.map-pop {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-decoration: none;
+  color: var(--color-ink-900);
+  min-width: 180px;
+}
+.map-pop strong {
+  font-size: 15px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.map-pop span {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.map-pop-where {
+  color: var(--color-ink-500);
+}
+
+/* Leaflet paints its panes at z-index 400-700, which would otherwise sit over the sticky
+   header. Contained here so the chrome always wins. */
+.leaflet-container {
+  z-index: 0;
+  font-family: inherit;
+}

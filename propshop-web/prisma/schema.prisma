@@ -1,0 +1,1133 @@
+// PropShop — data model (Build Brief v1.0, Section 9 + 6b/6c/6d additions)
+// Dev datasource is SQLite. `prisma/schema.postgres.prisma` is generated for production.
+// NOTE: SQLite has no native enum/json/array types. Enum-like columns are String and are
+// constrained in application code (src/lib/enums.ts). JSON columns are String holding JSON.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity, KYC and trust
+// ---------------------------------------------------------------------------
+
+model User {
+  id                 String   @id @default(cuid())
+  countryCode        String   @default("EG") // multi-country from day one (Phase 4: SA)
+  phone              String   @unique // E.164, e.g. +201001234567
+  email              String?  @unique
+  passwordHash       String?
+  fullName           String
+  nationalIdHash     String? // sha256(nationalId + pepper); raw ID is never stored
+  role               String   @default("buyer") // owner|buyer|investor|admin|advisor|photographer|reviewer
+  trustLevel         Int      @default(0) // 0 draft, 1 identity, 2 ownership, 3 photo, 4 site
+  strikes            Int      @default(0)
+  isBlocked          Boolean  @default(false)
+  // Diaspora / Gulf (pillar C)
+  countryOfResidence String   @default("EG")
+  preferredCurrency  String   @default("EGP") // EGP|SAR|AED|USD|KWD|QAR
+  preferredChannel   String   @default("in_app") // in_app|whatsapp|call
+  locale             String   @default("ar")
+  phoneVerifiedAt    DateTime?
+  emailVerifiedAt    DateTime?
+  // Pseudonymous public handle: buyers and sellers see "مشتري موثق #4821", never a name.
+  // Assigned at signup; unique so two counterparties can never collide in one inbox.
+  publicRef          Int?     @unique
+  // Buyer-side verification (Section 13). Funds/financing are attested, never exposed.
+  fundsStatus        String   @default("none") // none|declared|verified
+  fundsVerifiedAt    DateTime?
+  lastLoginAt        DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  kycDocuments     KycDocument[]
+  units            Unit[]
+  otpCodes         OtpCode[]
+  refreshTokens    RefreshToken[]
+  buyerRequests    Request[]          @relation("RequestBuyer")
+  advisorRequests  Request[]          @relation("RequestAdvisor")
+  requestEvents    RequestEvent[]
+  viewingRequests  ViewingRequest[]
+  conversationsOwn Conversation[]     @relation("ConvOwner")
+  conversationsBuy Conversation[]     @relation("ConvBuyer")
+  messages         Message[]
+  offers           Offer[]
+  offersReceived   Offer[]            @relation("OfferSeller")
+  deals            Deal[]
+  dealsAsSeller    Deal[]             @relation("DealSeller")
+  payments         Payment[]
+  photoBookings    PhotoBooking[]     @relation("BookingPhotographer")
+  bookingsRequested PhotoBooking[]    @relation("BookingRequester")
+  bookingNotes     PhotoBookingNote[]
+  reportsMade      Report[]           @relation("Reporter")
+  reportsAgainst   Report[]           @relation("ReportTarget")
+  strikeRecords    Strike[]
+  advisorSessions  AdvisorSession[]
+  serviceRequests  ServiceRequest[]
+  savedListings    SavedListing[]
+  reviewedDocs     KycDocument[]      @relation("DocReviewer")
+  auditLogs        AuditLog[]
+  viewingsAssigned ViewingRequest[]   @relation("ViewingStaff")
+  viewingNotes     ViewingNote[]      @relation("ViewingNoteAuthor")
+  tradeOffersMade  TradeOffer[]       @relation("TradeProposer")
+  tradeOffersGot   TradeOffer[]       @relation("TradeRecipient")
+  tradesAssigned   TradeOffer[]       @relation("TradeStaff")
+  listingsToReview Listing[]          @relation("ListingReviewer")
+  toursAdded       ListingTour[]      @relation("TourAddedBy")
+  tradeNotes       TradeNote[]        @relation("TradeNoteAuthor")
+  tradeRequests    TradeRequest[]
+  notifications    Notification[]
+
+  @@index([role])
+  @@index([trustLevel])
+  @@index([countryCode])
+}
+
+model OtpCode {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phone     String
+  codeHash  String
+  purpose   String   @default("login") // login|signup|phone_change
+  attempts  Int      @default(0)
+  consumedAt DateTime?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([phone, purpose])
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  revokedAt DateTime?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model KycDocument {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type          String // id_front|id_back|selfie|contract|deed|allocation|court_contract
+  fileKey       String
+  extractedJson String? // Claude vision structured extraction
+  status        String   @default("pending") // pending|approved|rejected
+  rejectReason  String?
+  reviewerId    String?
+  reviewer      User?    @relation("DocReviewer", fields: [reviewerId], references: [id])
+  reviewedAt    DateTime?
+  createdAt     DateTime @default(now())
+
+  listingId String?
+  listing   Listing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+
+  @@index([userId, type])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Location taxonomy — curated, never free-text
+// ---------------------------------------------------------------------------
+
+model Area {
+  id        String   @id @default(cuid())
+  countryCode String @default("EG")
+  nameAr    String
+  nameEn    String
+  slug      String   @unique
+  city      String
+  // Coastal is a property of the PLACE, not the building: an apartment in Marassi is a
+  // coastal property and a chalet in Sheikh Zayed is not. Set once per area by ops; every
+  // unit in the area inherits it. See src/lib/segments.ts.
+  isCoastal Boolean  @default(false)
+  centerLat Float?
+  centerLng Float?
+  geomJson  String? // GeoJSON Polygon ring [[lng,lat],...]
+  createdAt DateTime @default(now())
+
+  compounds Compound[]
+  units     Unit[]
+
+  @@index([city])
+  @@index([isCoastal])
+}
+
+model Compound {
+  id          String   @id @default(cuid())
+  countryCode String   @default("EG")
+  nameAr      String
+  nameEn      String
+  slug        String   @unique
+  developer   String
+  areaId      String
+  area        Area     @relation(fields: [areaId], references: [id])
+  centerLat   Float?
+  centerLng   Float?
+  geomJson    String? // GeoJSON Polygon ring — listings must fall inside
+  // Known ranges, used by the hard validation layer (Section 6c cross-checks)
+  minSizeSqm  Float?
+  maxSizeSqm  Float?
+  unitTypesJson String? // JSON array of allowed unit types
+  metadataJson  String?
+  createdAt   DateTime @default(now())
+
+  /*
+    Denormalised count of publicly visible listings in this compound.
+
+    The discover page ranks compounds by inventory. Expressed as
+    `orderBy: { units: { _count: "desc" } }` that is a correlated aggregate across three
+    tables which NO index can serve — measured at 251ms on 20k listings, the slowest
+    query in the product, on the most-visited page.
+
+    Maintained by refreshCompoundCounts() in src/lib/catalogue.ts when a listing becomes
+    visible or stops being visible. Drift shows a compound slightly out of order; it can
+    never affect what a buyer sees, because visibility is still enforced by
+    PUBLIC_LISTING_WHERE at query time.
+  */
+  liveListingCount   Int      @default(0)
+
+  units              Unit[]
+  developerPriceLists DeveloperPriceList[]
+  indexSnapshots     IndexSnapshot[]
+
+  @@index([areaId])
+  @@index([liveListingCount(sort: Desc)])
+}
+
+// ---------------------------------------------------------------------------
+// Units and listings
+// ---------------------------------------------------------------------------
+
+model Unit {
+  id              String   @id @default(cuid())
+  countryCode     String   @default("EG")
+  ownerId         String
+  owner           User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  compoundId      String?
+  compound        Compound? @relation(fields: [compoundId], references: [id])
+  areaId          String
+  area            Area     @relation(fields: [areaId], references: [id])
+  // Fingerprint blocks a second listing for the same physical unit (Section 5)
+  unitFingerprint String   @unique
+  building        String?
+  floor           Int?
+  unitNumber      String?
+  type            String // apartment|villa|townhouse|duplex|studio|chalet|office|retail
+  bedrooms        Int
+  bathrooms       Int
+  sizeSqm         Float
+  landSqm         Float?
+  finishing       String // core_shell|semi_finished|fully_finished|furnished
+  deliveryStatus  String // ready|under_construction
+  deliveryDate    DateTime?
+  view            String? // garden|pool|street|landscape|sea|open
+  lat             Float?
+  lng             Float?
+  createdAt       DateTime @default(now())
+
+  listings Listing[]
+
+  @@index([compoundId])
+  @@index([areaId])
+  // Every per-user query joins through here: "my listings", owner viewing/trade counts,
+  // trade eligibility and matches, blocking. Without it each is a full scan of Unit.
+  @@index([ownerId])
+}
+
+model Listing {
+  id              String   @id @default(cuid())
+  countryCode     String   @default("EG")
+  reference       String   @unique // human-facing e.g. AQ-000123
+  unitId          String
+  unit            Unit     @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  purpose         String // sale|rent
+  price           Float
+  /// "بدون أوفر": the owner sells at the ORIGINAL contract price, with no premium ("over")
+  /// on top. Declared by the owner when listing (owner, 2026-10-11).
+  withoutOver     Boolean  @default(false)
+  currency        String   @default("EGP")
+  paymentType     String // cash|installments|resale_installments
+  installmentJson String? // {downPayment, monthly, years, ...}
+
+  // Financial obligations that transfer with the unit (Section 5, True Cost).
+  //
+  // Explicit columns rather than JSON because the difference between "the owner told us
+  // there is nothing owed" and "we never asked" changes what the buyer is shown, and a
+  // null inside a JSON blob cannot express that. obligationsDeclaredAt is what separates
+  // the two: null here means unknown, and the cost panel says so instead of assuming 0.
+  remainingToDeveloper  Float?
+  maintenanceDue        Float?
+  obligationsDeclaredAt DateTime?
+  status          String   @default("draft") // see LISTING_STATUSES in src/lib/enums.ts
+  rejectReason    String?
+  trustLevel      Int      @default(0) // >= 2 required for public visibility
+  expiresAt       DateTime?
+  publishedAt     DateTime?
+  closedAt        DateTime?
+  closeReason     String? // sold|rented|withdrawn
+  descriptionAr   String?
+  descriptionEn   String?
+  titleAr         String?
+  titleEn         String?
+  views           Int      @default(0)
+
+  /*
+    How far this asking price sits below (negative) or above (positive) its own fair-price
+    midpoint, as a fraction. -0.12 means 12% below fair.
+
+    Denormalised so "best value" can be a real ORDER BY. It used to be computed in memory
+    AFTER pagination, which made the sort not merely slow but WRONG: it reordered the 24
+    rows of the current page, so "best value" never meant best across the catalogue.
+
+    Written by computeFairPriceForListing(). Null when there is not enough comparable data
+    for an estimate, and those listings sort last — an unknown is not a bargain.
+  */
+  valueGapPct     Float?
+  // Validation snapshot from the publish gate (Section 6c)
+  validationJson  String?
+  /*
+    Automatic location verification (src/lib/locationCheck.ts). The unit's location is
+    always its compound's; this records whether the photos agree. "unchecked" until the
+    first run, then "verified" | "issues". Issues are for the reviewer, not a publish block.
+  */
+  /*
+    Unit trading (owner, 2026-10-01). A listing can be for sale AND open to trade at once:
+    one unit, one listing, two ways to buy it. What the owner wants in return lives in
+    TradePreference. Only verified (public) listings can be offered or traded for.
+  */
+  openToTrade        Boolean   @default(false)
+  // Approved virtual tours. Kept on the row (maintained by src/lib/tourService.ts) so the
+  // "video tour" badge and filter on search cards cost no join over 40,000+ listings.
+  tourCount          Int       @default(0)
+  /// Staff member (reviewer/admin) the verification of this listing is assigned to.
+  assignedReviewerId String?
+  assignedReviewer   User?     @relation("ListingReviewer", fields: [assignedReviewerId], references: [id], onDelete: SetNull)
+  locationStatus     String    @default("unchecked")
+  locationIssuesJson String?
+  locationCheckedAt  DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  media            ListingMedia[]
+  tours            ListingTour[]
+  priceHistory     PriceHistory[]
+  viewingRequests  ViewingRequest[]
+  conversations    Conversation[]
+  offers           Offer[]
+  deals            Deal[]
+  requests         Request[]
+  kycDocuments     KycDocument[]
+  photoBookings    PhotoBooking[]
+  reports          Report[]
+  fairPrice        FairPriceEstimate[]
+  serviceRequests  ServiceRequest[]
+  savedBy          SavedListing[]
+  tradePreference  TradePreference?
+  tradeOffersIn    TradeOffer[]     @relation("TradeTarget")
+  tradeOfferUnits  TradeOfferUnit[]
+  tradeRequests    TradeRequest[]
+  payments         Payment[]
+
+  /*
+    Indexes follow the queries that were measured, not guesses. At 20k listings the
+    search path degraded 4x and the discover query 15x without these.
+
+    Every public query begins with `status = 'live' AND trustLevel >= 2`, so that pair
+    leads each composite; the remaining column is whatever the query then sorts or
+    filters on. A single-column index on `purpose` or `publishedAt` cannot serve those
+    queries because the leading predicate is always the visibility pair.
+  */
+  @@index([status, trustLevel, publishedAt(sort: Desc)]) // default search ordering
+  @@index([status, trustLevel, purpose, publishedAt(sort: Desc)]) // buy / rent tabs
+  @@index([status, trustLevel, price]) // price-range filter and price sorts
+  @@index([unitId]) // listings for a unit, and the owner's dashboard
+  @@index([expiresAt]) // the expiry sweep job
+  @@index([status, trustLevel, valueGapPct]) // the "best value" sort
+
+  @@index([locationStatus, status])
+  @@index([openToTrade, status, trustLevel]) // the trade marketplace
+  @@index([withoutOver, status, trustLevel]) // "units without over" page
+  @@index([assignedReviewerId, status]) // "assigned to me" in the verification queue
+}
+
+/// What an owner wants in exchange for a listing that is open to trade. Every criterion is
+/// optional; an empty list means "any". Lists are stored as JSON (SQLite has no arrays).
+model TradePreference {
+  id           String   @id @default(cuid())
+  listingId    String   @unique
+  listing      Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  typesJson    String   @default("[]") // unit types wanted, e.g. ["villa","townhouse"]
+  areaIdsJson  String   @default("[]") // Area ids wanted
+  minBedrooms  Int?
+  minSizeSqm   Float?
+  /// Value range of what the owner would take, in EGP. Compared with the offered units'
+  /// asking prices, which is the only value the platform knows.
+  minValue     Float?
+  maxValue     Float?
+  /// Cash to balance the swap: "i_pay" | "i_receive" | "either" | "none"
+  cash         String   @default("either")
+  note         String?
+  /// True while the listing is open to trade only because a trade request offered it
+  /// (/dashboard/trades). Deleting that request, or switching it to another unit, closes
+  /// the listing again; opening or closing from the listing's own trade settings clears it.
+  openedByRequest Boolean @default(false)
+  updatedAt    DateTime @updatedAt
+}
+
+/// A lister's "trade request": the unit they want in exchange, described with the same
+/// controls as the browse filters. Live listings open to trade that fit it are shown on
+/// save, and every later one that goes live notifies the requester (src/lib/tradeRequests.ts).
+/// Lists are JSON (SQLite has no arrays); an empty list means "any".
+model TradeRequest {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// The requester's own listing they would give in exchange, when they picked one.
+  listingId       String?
+  listing         Listing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+  typesJson       String   @default("[]") // unit types, e.g. ["villa","townhouse"]
+  areaIdsJson     String   @default("[]")
+  compoundIdsJson String   @default("[]")
+  bedroomsJson    String   @default("[]") // BEDROOM_OPTIONS values; "5" = 5 or more
+  bathroomsJson   String   @default("[]") // BATHROOM_OPTIONS values; "4" = 4 or more
+  paymentJson     String   @default("[]") // PAYMENT_TYPES
+  minPrice        Float?
+  maxPrice        Float?
+  description     String?
+  /// Off = kept for reference, no new notifications.
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([active])
+  @@index([userId, createdAt(sort: Desc)])
+}
+
+/// In-app notification shown in the dashboard (/dashboard/notifications).
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String // trade_match
+  titleAr   String
+  titleEn   String
+  bodyAr    String?
+  bodyEn    String?
+  href      String? // where tapping it goes, e.g. /listing/AQ-000123
+  /// Same event never notifies twice, e.g. "trade_match:<requestId>:<listingId>".
+  dedupeKey String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, readAt]) // the unread badge
+  @@index([userId, createdAt(sort: Desc)])
+}
+
+/// A trade offer: the proposer's unit(s) (+ optional cash) for the target listing.
+model TradeOffer {
+  id              String    @id @default(cuid())
+  reference       String    @unique // TR-100001
+  targetListingId String
+  targetListing   Listing   @relation("TradeTarget", fields: [targetListingId], references: [id], onDelete: Cascade)
+  proposerId      String
+  proposer        User      @relation("TradeProposer", fields: [proposerId], references: [id], onDelete: Cascade)
+  recipientId     String
+  recipient       User      @relation("TradeRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  /// Cash difference, EGP, >= 0. Who pays it: "proposer" | "recipient" | null when 0.
+  cashAmount      Float     @default(0)
+  cashPayer       String?
+  /// pending|accepted|rejected|withdrawn|expired — expiry is ALSO evaluated at read time.
+  status          String    @default("pending")
+  expiresAt       DateTime
+  respondedAt     DateTime?
+  createdAt       DateTime  @default(now())
+
+  /*
+    Back-office arrangement once a trade is accepted (/admin/trades). Two property
+    transfers at once is more work than a sale, so it is tracked as stages:
+    agreed -> documents -> contracts -> completed, or cancelled (units go back on sale).
+    Null until accepted.
+  */
+  /// Success fee each side owes, fixed at acceptance (fees.tradeFeeForReceived): each
+  /// owner pays by the type of unit they RECEIVE. Null until accepted.
+  proposerFee     Float?
+  recipientFee    Float?
+  stage           String?
+  stageUpdatedAt  DateTime?
+  cancelReason    String?
+  assignedStaffId String?
+  assignedStaff   User?     @relation("TradeStaff", fields: [assignedStaffId], references: [id], onDelete: SetNull)
+
+  units TradeOfferUnit[]
+  notes TradeNote[]
+
+  @@index([targetListingId, status])
+  @@index([proposerId, createdAt(sort: Desc)])
+  @@index([recipientId, createdAt(sort: Desc)])
+  @@index([recipientId, status, expiresAt]) // "trade offers waiting on me" badge
+  @@index([status, expiresAt])
+  @@index([stage])
+}
+
+/// Staff-only notes on a trade — never visible to either owner.
+model TradeNote {
+  id           String     @id @default(cuid())
+  tradeOfferId String
+  tradeOffer   TradeOffer @relation(fields: [tradeOfferId], references: [id], onDelete: Cascade)
+  authorId     String
+  author       User       @relation("TradeNoteAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  body         String
+  createdAt    DateTime   @default(now())
+
+  @@index([tradeOfferId, createdAt])
+}
+
+/// The proposer's listings included in a trade offer (1–3).
+model TradeOfferUnit {
+  id           String     @id @default(cuid())
+  tradeOfferId String
+  tradeOffer   TradeOffer @relation(fields: [tradeOfferId], references: [id], onDelete: Cascade)
+  listingId    String
+  listing      Listing    @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@unique([tradeOfferId, listingId])
+  @@index([listingId])
+}
+
+model ListingMedia {
+  id         String   @id @default(cuid())
+  listingId  String
+  listing    Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  fileKey    String
+  thumbKey   String?
+  phash      String? // perceptual hash for duplicate detection
+  gpsLat     Float?
+  gpsLng     Float?
+  capturedAt DateTime?
+  source     String // in_app|photographer|upload
+  room       String? // living|bedroom|kitchen|bathroom|facade|view
+  isVerified Boolean  @default(false)
+  isWatermarked Boolean @default(false)
+  // The photo that represents the unit everywhere it appears as one image: the search
+  // card, the owner's dashboard, the app. At most one per listing (enforced in
+  // src/lib/cover.ts, not by the database — SQLite has no partial unique index). When
+  // no photo is flagged, the lowest sortOrder acts as the cover, so this is additive.
+  isCover    Boolean  @default(false)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  // COVER_FIRST orders by (isCover desc, sortOrder asc) scoped to a listing, and it runs
+  // once per card on every search page. Without the composite this is a sort per row.
+  @@index([listingId, isCover(sort: Desc), sortOrder])
+  @@index([phash]) // duplicate-photo detection
+}
+
+model PriceHistory {
+  id        String   @id @default(cuid())
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  price     Float
+  kind      String   @default("ask") // ask|closed
+  changedAt DateTime @default(now())
+
+  @@index([listingId])
+}
+
+model SavedListing {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, listingId])
+}
+
+// ---------------------------------------------------------------------------
+// Requests (Section 6c) — the only way a buyer reaches a unit
+// ---------------------------------------------------------------------------
+
+model Request {
+  id               String   @id @default(cuid())
+  countryCode      String   @default("EG")
+  reference        String   @unique // e.g. RQ-000123
+  type             String // unit|open
+  listingId        String?
+  listing          Listing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+  buyerId          String
+  buyer            User     @relation("RequestBuyer", fields: [buyerId], references: [id], onDelete: Cascade)
+  profileJson      String // {budgetMin,budgetMax,purpose,areas[],bedrooms,paymentType,timeline,preferredSlots[]}
+  assignedAdvisorId String?
+  assignedAdvisor  User?    @relation("RequestAdvisor", fields: [assignedAdvisorId], references: [id])
+  assignedAt       DateTime?
+  slaDueAt         DateTime // assignedAt/createdAt + 24h
+  firstResponseAt  DateTime?
+  slaBreachedAt    DateTime?
+  escalatedAt      DateTime?
+  status           String   @default("received") // received|assigned|contacted|viewing_scheduled|offer|deal|closed|cancelled
+  shortlistJson    String? // AI advisor pre-built shortlist for open requests
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  events RequestEvent[]
+
+  @@index([status, slaDueAt])
+  @@index([assignedAdvisorId])
+  @@index([buyerId])
+}
+
+model RequestEvent {
+  id        String   @id @default(cuid())
+  requestId String
+  request   Request  @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  actorId   String?
+  actor     User?    @relation(fields: [actorId], references: [id])
+  event     String
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([requestId])
+}
+
+// ---------------------------------------------------------------------------
+// Viewings, masked chat, offers, deals
+// ---------------------------------------------------------------------------
+
+model ViewingRequest {
+  id          String   @id @default(cuid())
+  listingId   String
+  listing     Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  buyerId     String
+  buyer       User     @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  slotsJson   String // JSON array of ISO datetimes proposed by the buyer
+  /// requested|accepted|declined|proposed|completed|cancelled
+  /// "proposed" = the seller suggested a different time, which the buyer must confirm.
+  status      String   @default("requested")
+  proposedAt  DateTime? // the seller's alternative slot, when status is "proposed"
+  note        String?
+  scheduledAt DateTime?
+  // Phone numbers are only exchanged once a viewing is confirmed (Section 6c)
+  contactUnlockedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  /*
+    Back-office arrangement (/admin/viewings). Staff can confirm or move the time, assign
+    someone to attend or coordinate, record what happened, and keep internal notes.
+    None of this is shown to the buyer or the owner.
+  */
+  assignedStaffId String?
+  assignedStaff   User?     @relation("ViewingStaff", fields: [assignedStaffId], references: [id], onDelete: SetNull)
+  /// Set when status becomes "completed". outcome: attended|no_show
+  completedAt     DateTime?
+  outcome         String?
+
+  notes ViewingNote[]
+
+  @@index([listingId])
+  @@index([buyerId])
+  @@index([buyerId, status]) // "viewings waiting on me" badge, on every dashboard render
+  @@index([status, scheduledAt]) // the staff queue filters by state, then sorts by time
+  @@index([assignedStaffId])
+}
+
+/// Staff-only notes on a viewing — a timeline, never visible to buyer or owner.
+model ViewingNote {
+  id        String         @id @default(cuid())
+  viewingId String
+  viewing   ViewingRequest @relation(fields: [viewingId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User           @relation("ViewingNoteAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  body      String
+  createdAt DateTime       @default(now())
+
+  @@index([viewingId, createdAt])
+}
+
+/// One thread per (listing, buyer). Both inbox directions are indexed.
+model Conversation {
+  id        String   @id @default(cuid())
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  ownerId   String
+  owner     User     @relation("ConvOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  buyerId   String
+  buyer     User     @relation("ConvBuyer", fields: [buyerId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  messages Message[]
+
+  @@unique([listingId, buyerId])
+  @@index([ownerId])
+  @@index([buyerId])
+}
+
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         User     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  body           String
+  redactedBody   String? // body after phone/contact masking; what the recipient sees
+  flagged        Boolean  @default(false)
+  flagReason     String? // broker_language|contact_sharing|abuse
+  readAt         DateTime?
+  createdAt      DateTime @default(now())
+
+  // Thread rendering, and the unread badge (readAt IS NULL AND senderId <> me).
+  @@index([conversationId, createdAt])
+  @@index([readAt])
+  @@index([conversationId, readAt]) // unread count, on every dashboard render
+}
+
+/// A structured negotiation step (Section 8).
+///
+/// An offer is an object, not a chat message: it has an amount, a side, a status, an
+/// expiry and a link to the offer it answers. A counteroffer is a NEW Offer row whose
+/// parent is marked "countered", so the whole negotiation is a chain that can be
+/// replayed in the Deal Room rather than reconstructed from prose.
+model Offer {
+  id        String   @id @default(cuid())
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  buyerId   String
+  buyer     User     @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  sellerId  String
+  seller    User     @relation("OfferSeller", fields: [sellerId], references: [id], onDelete: Cascade)
+
+  /// Who made THIS step: "buyer" for an offer, "seller" for a counteroffer.
+  direction String   @default("buyer")
+
+  amount    Float
+  currency  String   @default("EGP")
+  message   String?
+  /// {paymentType, closingDays} — the buyer's proposed terms, kept as JSON because
+  /// SQLite has no JSON type (see src/lib/json.ts).
+  termsJson String?
+
+  /// pending|accepted|rejected|withdrawn|countered|expired
+  ///
+  /// "expired" is derived at read time from expiresAt as well as stored, so an offer is
+  /// never treated as live just because no sweep has run yet.
+  status    String   @default("pending")
+  expiresAt DateTime?
+
+  /// The offer this one answers. Null for the buyer's opening offer.
+  parentOfferId String?  @unique
+  parentOffer   Offer?   @relation("OfferChain", fields: [parentOfferId], references: [id])
+  counterOffer  Offer?   @relation("OfferChain")
+
+  respondedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  deals Deal[]
+
+  @@index([listingId, status])
+  // The offers inbox loads "everything where I am either side", newest first.
+  @@index([buyerId, createdAt(sort: Desc)])
+  @@index([sellerId, createdAt(sort: Desc)])
+  @@index([status, expiresAt]) // the expiry sweep
+}
+
+/// The Deal Room (Section 11) — created automatically when an offer is accepted.
+model Deal {
+  id                String   @id @default(cuid())
+  reference         String   @unique
+  listingId         String
+  listing           Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  buyerId           String
+  buyer             User     @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  sellerId          String
+  seller            User     @relation("DealSeller", fields: [sellerId], references: [id], onDelete: Cascade)
+  offerId           String?
+  offer             Offer?   @relation(fields: [offerId], references: [id])
+  /// The accepted amount, fixed at acceptance. closedPrice below is what actually
+  /// completed, which can differ if the parties renegotiate late.
+  agreedPrice       Float    @default(0)
+  /// Reservation hold (Section 9). The countdown the buyer sees.
+  reservedUntil     DateTime?
+  advisorId         String?
+  stage             String   @default("offer_accepted") // offer_accepted|deposit_held|due_diligence|contract_signing|balance_handover|closed|cancelled
+  adminFee          Float    @default(0) // FLAT fee. Never a percentage — see Section 3.
+  depositAmount     Float?
+  depositProviderRef String?
+  depositStatus     String   @default("pending") // pending|held|released|refunded
+  contractFileKey   String?
+  checklistJson     String?
+  closedPrice       Float?
+  signingAt         DateTime?
+  closedAt          DateTime?
+  isRemote          Boolean  @default(false)
+  poaStatus         String? // not_required|pending|received|verified
+  createdAt         DateTime @default(now())
+
+  documents DealDocument[]
+  events    DealEvent[]
+
+  @@index([stage])
+  @@index([buyerId])
+  @@index([sellerId])
+}
+
+model DealDocument {
+  id        String   @id @default(cuid())
+  dealId    String
+  deal      Deal     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  type      String
+  fileKey   String
+  status    String   @default("pending")
+  createdAt DateTime @default(now())
+}
+
+model DealEvent {
+  id        String   @id @default(cuid())
+  dealId    String
+  deal      Deal     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  actorId   String?
+  event     String
+  note      String?
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Money — fees only, no commission logic anywhere
+// ---------------------------------------------------------------------------
+
+model Payment {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listingId   String?
+  listing     Listing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+  // reservation_deposit — a refundable hold paid by the buyer, returned if documents fail
+  // success_fee        — the banded fee, earned only when a deal completes
+  // photo_package      — optional photography
+  // service_fee        — an optional third-party service
+  //
+  // reservation_deposit and success_fee are deliberately distinct: a deposit is the
+  // buyer's money being held, a fee is our revenue. Recording a hold as a fee overstates
+  // earnings and makes refunds look like losses.
+  purpose     String
+  provider    String // paymob|fawry|manual
+  amount      Float
+  currency    String   @default("EGP")
+  status      String   @default("pending") // pending|paid|failed|refunded
+  providerRef String?
+  paidAt      DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([status])
+}
+
+model FeeConfig {
+  id          String   @id @default(cuid())
+  countryCode String   @default("EG")
+  // photo_package | deal_fee. Listing and featured-placement fees were removed —
+  // see src/lib/fees.ts, which is the source of truth for the whole fee model.
+  key         String
+  label       String
+  amount      Float
+  currency    String   @default("EGP")
+  periodDays  Int? // e.g. 60 for a listing fee
+  notes       String?
+  activeFrom  DateTime @default(now())
+
+  @@unique([countryCode, key])
+}
+
+/// A professional photography + 360° virtual tour shoot an owner books for a listing.
+/// Arranged by staff in /admin/bookings; rules in src/lib/tourBooking.ts.
+///
+///   requested → scheduled → shot → delivered      (cancelled from any open state)
+///
+/// "Delivered" is set automatically when staff add the finished tour to the listing.
+model PhotoBooking {
+  id             String    @id @default(cuid())
+  reference      String?   @unique // TB-100001
+  listingId      String
+  listing        Listing   @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  requestedById  String?
+  requestedBy    User?     @relation("BookingRequester", fields: [requestedById], references: [id])
+  photographerId String?
+  photographer   User?     @relation("BookingPhotographer", fields: [photographerId], references: [id])
+  // The owner's preferred window start (Cairo viewing windows), and the agreed one.
+  preferredAt    DateTime?
+  scheduledAt    DateTime?
+  status         String    @default("requested") // requested|scheduled|shot|delivered|cancelled
+  ownerNote      String?
+  cancelReason   String?
+  // The package price when booked, so a later fee change doesn't rewrite what was agreed.
+  feeAmount      Float?
+  shotAt         DateTime?
+  deliveredAt    DateTime?
+  packageKey     String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @default(now()) @updatedAt
+  notes          PhotoBookingNote[]
+
+  @@index([status, scheduledAt]) // the staff tabs: by state, soonest first
+  @@index([photographerId, status]) // "assigned to me"
+  @@index([listingId, status]) // one open booking per listing
+}
+
+/// Staff-only notes on a booking — never shown to the owner.
+model PhotoBookingNote {
+  id        String       @id @default(cuid())
+  bookingId String
+  booking   PhotoBooking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User         @relation(fields: [authorId], references: [id])
+  body      String
+  createdAt DateTime     @default(now())
+
+  @@index([bookingId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Anti-broker enforcement
+// ---------------------------------------------------------------------------
+
+model Report {
+  id           String   @id @default(cuid())
+  reporterId   String
+  reporter     User     @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  targetUserId String?
+  targetUser   User?    @relation("ReportTarget", fields: [targetUserId], references: [id])
+  listingId    String?
+  listing      Listing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+  reason       String // contacted_by_broker|fake_photos|duplicate|wrong_price|unreachable|other
+  detail       String?
+  status       String   @default("open") // open|upheld|dismissed
+  createdAt    DateTime @default(now())
+
+  @@index([status])
+}
+
+model Strike {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reason    String
+  reportId  String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  actor     User?    @relation(fields: [actorId], references: [id])
+  action    String
+  entity    String
+  entityId  String?
+  metaJson  String?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+}
+
+// ---------------------------------------------------------------------------
+// Pricing intelligence (Section 6b-A, 6d-B)
+// ---------------------------------------------------------------------------
+
+model DeveloperPriceList {
+  id              String   @id @default(cuid())
+  compoundId      String
+  compound        Compound @relation(fields: [compoundId], references: [id], onDelete: Cascade)
+  unitType        String
+  sizeMin         Float
+  sizeMax         Float
+  bedrooms        Int?
+  cashPrice       Float
+  currency        String   @default("EGP")
+  installmentJson String?
+  deliveryDate    DateTime?
+  isAvailable     Boolean  @default(true)
+  source          String // every row carries a source and a date
+  effectiveDate   DateTime
+  createdAt       DateTime @default(now())
+
+  @@index([compoundId, unitType])
+}
+
+model FairPriceEstimate {
+  id         String   @id @default(cuid())
+  listingId  String
+  listing    Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  low        Float
+  mid        Float
+  high       Float
+  confidence String // low|medium|high
+  method     String // rules_v1|ml_v2
+  sampleSize Int      @default(0)
+  factorsJson String?
+  computedAt DateTime @default(now())
+
+  @@index([listingId])
+}
+
+model IndexSnapshot {
+  id             String   @id @default(cuid())
+  period         String // YYYY-MM — immutable once written
+  compoundId     String?
+  compound       Compound? @relation(fields: [compoundId], references: [id])
+  areaId         String?
+  unitType       String
+  purpose        String   @default("sale")
+  medianAskSqm   Float?
+  medianCloseSqm Float?
+  sampleSize     Int
+  rentYield      Float?
+  devGapPct      Float?
+  createdAt      DateTime @default(now())
+
+  @@unique([period, compoundId, areaId, unitType, purpose])
+  @@index([period])
+}
+
+model FxRate {
+  id        String   @id @default(cuid())
+  base      String   @default("EGP")
+  quote     String // SAR|AED|USD|KWD|QAR
+  rate      Float
+  fetchedAt DateTime @default(now())
+
+  @@unique([base, quote, fetchedAt])
+}
+
+// ---------------------------------------------------------------------------
+// AI advisor (Section 6b-B)
+// ---------------------------------------------------------------------------
+
+model AdvisorSession {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mode        String   @default("buyer") // buyer|investor|owner
+  profileJson String?
+  createdAt   DateTime @default(now())
+
+  messages AdvisorMessage[]
+
+  @@index([userId])
+}
+
+model AdvisorMessage {
+  id            String   @id @default(cuid())
+  sessionId     String
+  session       AdvisorSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role          String // user|assistant|tool
+  body          String
+  toolCallsJson String?
+  createdAt     DateTime @default(now())
+
+  @@index([sessionId])
+}
+
+// ---------------------------------------------------------------------------
+// Finishing / furnishing services (Section 6b-C)
+// ---------------------------------------------------------------------------
+
+model ServiceVendor {
+  id        String   @id @default(cuid())
+  name      String
+  category  String // finishing|furnishing|interior_design|moving
+  rating    Float    @default(0)
+  areasJson String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  requests ServiceRequest[]
+}
+
+model ServiceRequest {
+  id             String   @id @default(cuid())
+  listingId      String?
+  listing        Listing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+  requesterId    String
+  requester      User     @relation(fields: [requesterId], references: [id], onDelete: Cascade)
+  type           String // core_shell|full_finishing|furnishing|interior_design
+  tier           String? // studio|2br|3br|villa
+  status         String   @default("requested") // requested|survey_booked|quoted|deposit_paid|in_progress|delivered|cancelled
+  surveyAt       DateTime?
+  quoteJson      String?
+  milestonesJson String?
+  vendorId       String?
+  vendor         ServiceVendor? @relation(fields: [vendorId], references: [id])
+  managementFee  Float?
+  createdAt      DateTime @default(now())
+
+  payments ServicePayment[]
+}
+
+model ServicePayment {
+  id               String   @id @default(cuid())
+  serviceRequestId String
+  serviceRequest   ServiceRequest @relation(fields: [serviceRequestId], references: [id], onDelete: Cascade)
+  milestone        String
+  amount           Float
+  status           String   @default("pending")
+  paidAt           DateTime?
+  createdAt        DateTime @default(now())
+}
+
+/// A virtual tour on a listing: an uploaded walkthrough video, or an embedded link to a
+/// hosted video / 3D tour (YouTube, Vimeo, Matterport, Kuula). Owner-added tours start
+/// `pending` and are public only once staff approve them — a video can carry a broker's
+/// number or logo, or show a different unit. Rules: src/lib/tours.ts.
+model ListingTour {
+  id           String    @id @default(cuid())
+  listingId    String
+  listing      Listing   @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  kind         String // video | embed
+  provider     String // upload | youtube | vimeo | matterport | kuula
+  // Playable address: the public video file for uploads, the normalised embed URL for links.
+  url          String
+  // What was pasted, for links (audit trail); null for uploads.
+  sourceUrl    String?
+  posterUrl    String?
+  mimeType     String?
+  bytes        Int?
+  title        String?
+  status       String    @default("pending") // pending | approved | rejected
+  rejectReason String?
+  addedById    String
+  addedBy      User      @relation("TourAddedBy", fields: [addedById], references: [id])
+  reviewedById String?
+  reviewedAt   DateTime?
+  sortOrder    Int       @default(0)
+  createdAt    DateTime  @default(now())
+
+  @@index([listingId, status, sortOrder]) // the listing page: approved tours in order
+  @@index([status, createdAt]) // the review queue: oldest pending first
+}
+
+// ---------------------------------------------------------------------------
+// Site settings — admin-editable chrome (the home hero cover, …)
+// ---------------------------------------------------------------------------
+
+/// One row per setting; `value` is JSON validated by the code that owns the key
+/// (src/lib/siteHero.ts for "home_hero"). A key/value table rather than columns so the
+/// next admin-editable thing does not need a migration.
+model SiteSetting {
+  key         String   @id
+  value       String
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+}

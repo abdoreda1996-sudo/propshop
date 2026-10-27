@@ -1,0 +1,12 @@
+# Never upload local secrets or data. (With this file present Vercel does NOT read
+# .gitignore, so every secret file must be listed here.)
+.env
+.env.*
+*.local
+.data
+prisma/*.db
+prisma/*.db-journal
+*.log
+tsconfig.tsbuildinfo
+node_modules
+.next

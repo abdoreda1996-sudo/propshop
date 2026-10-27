@@ -1,0 +1,9 @@
+compound_slug,unit_type,size_min,size_max,bedrooms,cash_price,currency,delivery_date,is_available,down_payment_pct,years,source,effective_date
+mivida,apartment,110,180,3,"12,500,000",EGP,2027-06-30,true,10,8,Emaar Misr price sheet (ZONE),2026-09-01
+mivida,villa,240,420,4,38.5M,EGP,2027-12-31,true,15,7,Emaar Misr price sheet (ZONE),2026-09-01
+zed-west,apartment,90,150,2,9750000,EGP,2028-03-31,yes,5,10,Ora Developers sheet,2026-09-01
+badya,apartment,95,160,3,"6,200,000",EGP,2029-01-31,no,10,9,Palm Hills sheet (Maxupp),2026-08-15
+bad-slug,apartment,100,200,3,5000000,EGP,,true,,,Some sheet,2026-09-01
+mivida,spaceship,100,200,3,5000000,EGP,,true,,,Some sheet,2026-09-01
+mivida,apartment,100,200,3,not-a-price,EGP,,true,,,Some sheet,2026-09-01
+mivida,apartment,100,200,3,5000000,EGP,,true,,,,2026-09-01

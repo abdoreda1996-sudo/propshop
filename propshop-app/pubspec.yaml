@@ -1,0 +1,64 @@
+name: aqarsale_app
+description: "PropShop — Egypt's broker-free, verified property marketplace."
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  http: ^1.2.2
+  http_parser: ^4.0.2
+  url_launcher: ^6.3.1
+  provider: ^6.1.2
+  shared_preferences: ^2.3.3
+  intl: ^0.20.2
+  # In-app capture with GPS is the reason this app exists (Section 6c): photos must be
+  # taken through our camera so they carry a location and a timestamp we control.
+  camera: ^0.11.0+2
+  geolocator: ^13.0.2
+  cached_network_image: ^3.4.1
+  # Virtual tours: uploaded walkthrough videos play in the app; owners pick a video file.
+  video_player: ^2.9.2
+  file_picker: ^8.1.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+
+  # Bundled type, matching the website (2026-10-26). Bricolage Grotesque for Latin and
+  # figures (static instances cut from the variable font: opsz 14 for text weights,
+  # 24-32 for bold display weights), IBM Plex Sans Arabic for Arabic. Both SIL OFL 1.1;
+  # licences sit beside the files.
+  fonts:
+    - family: Bricolage
+      fonts:
+        - asset: assets/fonts/BricolageGrotesque-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/BricolageGrotesque-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/BricolageGrotesque-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/BricolageGrotesque-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/BricolageGrotesque-ExtraBold.ttf
+          weight: 800
+    - family: PlexArabic
+      fonts:
+        - asset: assets/fonts/IBMPlexSansArabic-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/IBMPlexSansArabic-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/IBMPlexSansArabic-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/IBMPlexSansArabic-Bold.ttf
+          weight: 700

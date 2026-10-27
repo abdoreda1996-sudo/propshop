@@ -1,0 +1,29 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+!.env.production.example
+*.jks
+*.keystore
+key.properties
+*.pem
+*.p8
+*.p12
+google-services.json
+GoogleService-Info.plist
+
+# Local data / logs
+*.db
+*.db-journal
+*.log
+.data/
+public/uploads/
+
+# Build output / deps
+node_modules/
+.next/
+out/
+build/
+.dart_tool/
+.vercel/
+propshop-web/public/app/

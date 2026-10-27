@@ -1,0 +1,724 @@
+openapi: 3.1.0
+info:
+  title: PropShop API
+  version: 0.1.0
+  description: |
+    The shared API behind the PropShop web site and Flutter app. One implementation
+    serves both clients so a business rule can never differ between them.
+
+    **Auth** — every protected endpoint accepts either the httpOnly `aq_at` cookie (web)
+    or `Authorization: Bearer <accessToken>` (mobile). Access tokens last 30 minutes;
+    refresh tokens are single-use and rotate.
+
+    **Public visibility** — no endpoint ever returns a listing that is not `status=live`
+    AND `trustLevel >= 2`. Drafts and listings under review are invisible to buyers.
+servers:
+  - url: http://localhost:4100
+    description: Local development
+
+tags:
+  - name: Auth
+  - name: Listings
+  - name: Owner
+  - name: Requests
+  - name: Reports
+  - name: Reference
+
+paths:
+  /api/auth/otp/request:
+    post:
+      tags: [Auth]
+      summary: Send a login or signup code
+      description: |
+        Accepts Egyptian (`01…` or `+20`) and Gulf numbers. Rate limited per phone
+        (5 / 15 min) and per IP (20 / 15 min). In development the code is echoed back as
+        `devCode` so the flow is testable without an SMS gateway.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                phone: { type: string, example: "01001234567" }
+      responses:
+        "200":
+          description: Code sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sent: { type: boolean }
+                  isNewUser: { type: boolean }
+                  countryCode: { type: string, example: EG }
+                  phone: { type: string, example: "+201001234567" }
+                  devCode: { type: string, description: Development only }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/auth/otp/verify:
+    post:
+      tags: [Auth]
+      summary: Verify a code, creating the account on first sign-in
+      description: |
+        A new phone number requires `fullName`. The code is only consumed once the request
+        will succeed, so being asked for a name does not burn it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, code]
+              properties:
+                phone: { type: string }
+                code: { type: string, pattern: "^[0-9]{6}$" }
+                fullName:
+                  type: string
+                  description: Required for a new account; matched against the ID during KYC.
+      responses:
+        "200": { $ref: "#/components/responses/AuthSuccess" }
+        "401": { description: Code incorrect }
+        "410": { description: Code expired or already used }
+        "422":
+          description: Validation failed; `name_required` means this is a new account.
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Email and password sign-in (staff and demo accounts)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        "200": { $ref: "#/components/responses/AuthSuccess" }
+        "401": { description: Invalid credentials }
+        "403": { description: Account suspended }
+
+  /api/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate the refresh token and mint a new access token
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken: { type: string }
+      responses:
+        "200":
+          description: New token pair
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string }
+                  refreshToken: { type: string }
+        "401": { description: Missing, invalid or already-used refresh token }
+
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke every refresh token and clear cookies
+      responses:
+        "200": { description: Signed out }
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Current user and header counters
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+                  counts:
+                    type: object
+                    properties:
+                      activeListings: { type: integer }
+                      openRequests: { type: integer }
+                      saved: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    patch:
+      tags: [Auth]
+      summary: Update profile settings
+      description: The name is locked once an identity is verified, because the publish gate matches it.
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fullName: { type: string }
+                email: { type: string, format: email }
+                countryOfResidence: { type: string }
+                preferredCurrency: { type: string, enum: [EGP, SAR, AED, USD, KWD, QAR] }
+                preferredChannel: { type: string, enum: [in_app, whatsapp, call] }
+                locale: { type: string, enum: [ar, en] }
+      responses:
+        "200": { description: Updated }
+        "409": { description: Email already in use }
+
+  /api/listings:
+    get:
+      tags: [Listings]
+      summary: Search publicly visible listings
+      parameters:
+        - { name: purpose, in: query, schema: { type: string, enum: [sale, rent] } }
+        - { name: area, in: query, schema: { type: string }, description: Area slug }
+        - { name: compound, in: query, schema: { type: string }, description: Compound slug }
+        - { name: type, in: query, schema: { type: string, enum: [apartment, villa, townhouse, duplex, studio, chalet, office, retail] } }
+        - { name: minPrice, in: query, schema: { type: integer } }
+        - { name: maxPrice, in: query, schema: { type: integer } }
+        - { name: bedrooms, in: query, schema: { type: integer }, description: Minimum bedrooms }
+        - { name: finishing, in: query, schema: { type: string, enum: [core_shell, semi_finished, fully_finished, furnished] } }
+        - { name: delivery, in: query, schema: { type: string, enum: [ready, under_construction] } }
+        - { name: payment, in: query, schema: { type: string, enum: [cash, installments, resale_installments] } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: sort, in: query, schema: { type: string, enum: [newest, price_asc, price_desc, best_value], default: newest } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: perPage, in: query, schema: { type: integer, default: 24, maximum: 60 } }
+      responses:
+        "200":
+          description: Matching listings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ListingCard" }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pages: { type: integer }
+
+  /api/listings/draft:
+    post:
+      tags: [Owner]
+      summary: Create a draft listing
+      description: |
+        Refuses a unit already in flight (`duplicate_unit`, 409) and an owner at the
+        3-listing cap (`cap_reached`, 403).
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DraftInput" }
+      responses:
+        "201":
+          description: Draft created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  listingId: { type: string }
+                  reference: { type: string, example: AQ-100123 }
+        "403": { description: cap_reached or blocked }
+        "409":
+          description: duplicate_unit — includes `existingReference`
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /api/listings/{id}:
+    patch:
+      tags: [Owner]
+      summary: Edit a draft or rejected listing
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/ListingId" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                price: { type: number }
+                titleAr: { type: string }
+                titleEn: { type: string }
+                descriptionAr: { type: string }
+                descriptionEn: { type: string }
+      responses:
+        "200": { description: Updated }
+        "409": { description: listing_locked — only drafts and rejected listings are editable }
+
+  /api/listings/{id}/media:
+    get:
+      tags: [Owner]
+      summary: The owner's photos of a draft or listing
+      description: |
+        Owner only; any other account gets 404. `room` is the checklist key POST uses.
+        Every row is a photo, so `kind` is always `photo`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: "{ media: [{ id, room, kind, source, thumbUrl, url, isCover, isVerified, capturedAt }] }"
+        "404": { description: Not found, or not the owner }
+    post:
+      tags: [Owner]
+      summary: Register a captured photo
+      description: |
+        A photo claiming `source: in_app` must carry GPS within 500 m of the unit.
+        Anything further away is silently demoted to `upload`, which cannot satisfy the
+        six-photo minimum.
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/ListingId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fileKey]
+              properties:
+                fileKey: { type: string }
+                thumbKey: { type: string }
+                room: { type: string, enum: [living, bedroom, kitchen, bathroom, facade, view] }
+                source: { type: string, enum: [in_app, photographer, upload] }
+                gpsLat: { type: number }
+                gpsLng: { type: number }
+                capturedAt: { type: string, format: date-time }
+                phash: { type: string }
+      responses:
+        "201":
+          description: Registered; `source` reflects any demotion
+        "409": { description: listing_locked }
+    delete:
+      tags: [Owner]
+      summary: Remove a photo
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/ListingId" }
+        - { name: mediaId, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+
+  /api/listings/{id}/ownership-doc:
+    post:
+      tags: [Owner]
+      summary: Attach the ownership document and run extraction
+      description: |
+        Send `images` as base64 payloads for a real Claude extraction. The extraction is
+        evidence for a reviewer, never an approval.
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/ListingId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fileKey]
+              properties:
+                type: { type: string, enum: [deed, contract, allocation, court_contract] }
+                fileKey: { type: string }
+                images:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      mediaType: { type: string, enum: [image/jpeg, image/png, image/webp] }
+                      data: { type: string, description: base64, no newlines }
+      responses:
+        "201":
+          description: Stored, with the extraction and a fresh validation result
+        "422": { description: extraction_failed or images_required }
+
+  /api/listings/{id}/validate:
+    get:
+      tags: [Owner]
+      summary: Run the publish gate
+      description: Returns every blocking check and warning with the exact field to fix.
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/ListingId" }]
+      responses:
+        "200":
+          description: Validation result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ValidationResult" }
+
+  /api/listings/{id}/submit:
+    post:
+      tags: [Owner]
+      summary: Submit for review (draft → pending_review)
+      description: Refused with the full validation result if any blocking check fails.
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/ListingId" }]
+      responses:
+        "200": { description: Submitted }
+        "422":
+          description: validation_failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  validation: { $ref: "#/components/schemas/ValidationResult" }
+
+  /api/listings/{id}/publish:
+    post:
+      tags: [Owner]
+      summary: Reviewer approval (staff only)
+      description: Re-runs the gate before going live; a stale pass never publishes.
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/ListingId" }]
+      responses:
+        "200": { description: Live, with the earned trust level }
+        "403": { description: Staff only }
+        "422": { description: validation_failed }
+
+  /api/listings/{id}/reject:
+    post:
+      tags: [Owner]
+      summary: Reject with a reason (staff only)
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/ListingId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 5, description: Sent to the owner }
+      responses:
+        "200": { description: Rejected }
+
+  /api/requests:
+    get:
+      tags: [Requests]
+      summary: The signed-in buyer's requests
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        "200":
+          description: Requests with SLA fields and the event trail
+    post:
+      tags: [Requests]
+      summary: Create a unit or open request
+      description: |
+        Assigns a salaried advisor within minutes and sets `slaDueAt` 24 hours out.
+        Limited to 10 per account per hour.
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type: { type: string, enum: [unit, open] }
+                listingId: { type: string, description: Required when type is unit }
+                profile: { $ref: "#/components/schemas/RequestProfile" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reference: { type: string, example: RQ-100123 }
+                  status: { type: string }
+                  slaDueAt: { type: string, format: date-time }
+        "404": { description: listing_not_available }
+        "422": { description: brief_too_thin — an open request needs a budget or an area }
+
+  /api/requests/{id}:
+    patch:
+      tags: [Requests]
+      summary: Advisor actions (staff only)
+      description: |
+        `first_response` is what actually satisfies the SLA and reveals the buyer's number
+        to that advisor. `status` moves the request along the visible trail.
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [first_response, status] }
+                status:
+                  type: string
+                  enum: [received, assigned, contacted, viewing_scheduled, offer, deal, closed, cancelled]
+                note: { type: string }
+      responses:
+        "200": { description: Updated }
+        "403": { description: Staff only }
+
+  /api/reports:
+    post:
+      tags: [Reports]
+      summary: Report a listing
+      description: Reporting never auto-strikes an owner; a human must uphold it first.
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                listingId: { type: string }
+                reason:
+                  type: string
+                  enum: [contacted_by_broker, fake_photos, duplicate, wrong_price, unreachable, other]
+                detail: { type: string, maxLength: 2000 }
+      responses:
+        "201": { description: Report filed }
+
+  /api/reports/{id}:
+    patch:
+      tags: [Reports]
+      summary: Uphold or dismiss a report (staff only)
+      description: |
+        Upholding issues a strike. Three strikes suspend the account and pause its live
+        listings.
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [upheld, dismissed] }
+      responses:
+        "200":
+          description: Resolved, with the resulting strike count and whether the account was blocked
+        "409": { description: already_resolved }
+
+  /api/kyc/identity:
+    post:
+      tags: [Owner]
+      summary: Upload a KYC level 1 document
+      description: |
+        All three of `id_front`, `id_back` and `selfie` raise the account to trust level 1.
+        Level 1 alone never makes a listing public — that needs the per-unit ownership
+        document.
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, fileKey]
+              properties:
+                type: { type: string, enum: [id_front, id_back, selfie] }
+                fileKey: { type: string }
+                nationalId: { type: string, description: 14 digits; stored only as a hash }
+                images:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      mediaType: { type: string }
+                      data: { type: string }
+      responses:
+        "201": { description: Stored; `complete` and `nameMismatch` report the outcome }
+
+  /api/compounds:
+    get:
+      tags: [Reference]
+      summary: The curated compound taxonomy
+      description: Location is always a curated compound, never a free-text address.
+      responses:
+        "200":
+          description: Compounds with their area, size range and allowed unit types
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: aq_at
+
+  parameters:
+    ListingId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+
+  responses:
+    Unauthorized:
+      description: Not signed in
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ValidationError:
+      description: Invalid input
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: Too many requests
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    AuthSuccess:
+      description: Signed in; tokens are also set as httpOnly cookies
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              user: { $ref: "#/components/schemas/User" }
+              accessToken: { type: string }
+              refreshToken: { type: string }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string, description: A stable machine-readable code }
+
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        fullName: { type: string }
+        phone: { type: string }
+        email: { type: string, nullable: true }
+        role: { type: string, enum: [buyer, owner, investor, advisor, reviewer, photographer, admin] }
+        trustLevel: { type: integer, minimum: 0, maximum: 4 }
+        countryCode: { type: string }
+        preferredCurrency: { type: string }
+
+    ListingCard:
+      type: object
+      properties:
+        id: { type: string }
+        reference: { type: string }
+        href: { type: string }
+        titleAr: { type: string }
+        titleEn: { type: string }
+        price: { type: number }
+        currency: { type: string }
+        purpose: { type: string, enum: [sale, rent] }
+        paymentType: { type: string }
+        photo: { type: string, nullable: true }
+        compoundAr: { type: string, nullable: true }
+        areaAr: { type: string }
+        type: { type: string }
+        bedrooms: { type: integer }
+        bathrooms: { type: integer }
+        sizeSqm: { type: number }
+        finishing: { type: string }
+        deliveryStatus: { type: string }
+        trustLevel: { type: integer, minimum: 2, description: Always 2 or above in public results }
+        daysOnMarket: { type: integer }
+        fair:
+          type: object
+          nullable: true
+          description: Absent when there are too few comparables to estimate honestly.
+          properties:
+            low: { type: number }
+            mid: { type: number }
+            high: { type: number }
+            confidence: { type: string, enum: [low, medium, high] }
+        verdict: { type: string, enum: [below, fair, above, unknown] }
+
+    DraftInput:
+      type: object
+      required: [areaId, type, bedrooms, bathrooms, sizeSqm, finishing, deliveryStatus, purpose, price, paymentType]
+      properties:
+        compoundId: { type: string, nullable: true }
+        areaId: { type: string }
+        building: { type: string, nullable: true }
+        floor: { type: integer, nullable: true }
+        unitNumber: { type: string, nullable: true }
+        type: { type: string }
+        bedrooms: { type: integer }
+        bathrooms: { type: integer }
+        sizeSqm: { type: number }
+        finishing: { type: string }
+        deliveryStatus: { type: string }
+        view: { type: string, nullable: true }
+        lat: { type: number, nullable: true }
+        lng: { type: number, nullable: true }
+        purpose: { type: string, enum: [sale, rent] }
+        price: { type: number }
+        paymentType: { type: string }
+        titleAr: { type: string, nullable: true }
+        descriptionAr: { type: string, nullable: true }
+
+    Check:
+      type: object
+      properties:
+        code: { type: string, example: size_outside_compound_range }
+        severity: { type: string, enum: [block, warn] }
+        field:
+          type: string
+          nullable: true
+          description: The exact field to fix, e.g. "unit.sizeSqm"
+        messageAr: { type: string }
+        messageEn: { type: string }
+
+    ValidationResult:
+      type: object
+      properties:
+        canPublish: { type: boolean }
+        blocks:
+          type: array
+          items: { $ref: "#/components/schemas/Check" }
+        warnings:
+          type: array
+          items: { $ref: "#/components/schemas/Check" }
+        trustLevel:
+          type: integer
+          description: The level this listing earns if it publishes.
+
+    RequestProfile:
+      type: object
+      properties:
+        purpose: { type: string, enum: [live, invest, rent_out] }
+        budgetMin: { type: integer }
+        budgetMax: { type: integer }
+        areas:
+          type: array
+          items: { type: string, description: Area slug }
+        bedrooms: { type: integer }
+        paymentType: { type: string, enum: [cash, installments, resale_installments] }
+        timeline: { type: string, enum: [immediate, 3_months, 6_months, browsing] }
+        preferredSlots:
+          type: array
+          items: { type: string, format: date-time }
+        note: { type: string }

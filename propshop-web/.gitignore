@@ -1,0 +1,19 @@
+node_modules
+.next
+out
+build
+.env
+*.db
+*.db-journal
+.DS_Store
+public/uploads
+
+# Local media store (originals + renditions) — see src/lib/mediaStore.ts
+.data
+
+# local secrets (e.g. the friends-test server)
+.env*.local
+# Flutter web build copied in for same-origin serving
+public/app/
+
+.vercel
